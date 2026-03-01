@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router";
-import { toast } from "sonner";
 import { Header } from "./Header";
 import { StampCard } from "./StampCard";
 import { ShareButton } from "./ShareButton";
@@ -140,7 +139,6 @@ export function Home() {
       const slug = await ensureStampbook(accessToken);
       if (!slug) {
         console.error("Could not create stampbook slug");
-        toast.error("Could not generate your share link. Please try again.");
         setShareLoading(false);
         return;
       }
@@ -193,22 +191,6 @@ export function Home() {
         {/* Header */}
         <Header />
 
-        {/* Stamp count subtitle */}
-        {!isLoading && stamps.length > 0 && (
-          <div className="w-full px-[18px] flex items-center justify-between">
-            <p
-              style={{
-                fontFamily: "'Inter', sans-serif",
-                fontSize: "13px",
-                color: "#A0A09C",
-              }}
-            >
-              {stamps.length} stamp{stamps.length !== 1 ? "s" : ""}
-              {isAuthenticated ? "" : " (local)"}
-            </p>
-          </div>
-        )}
-
         {/* Stamp Grid */}
         <div
           className="grid grid-cols-2 w-full px-[18px] pb-[142px]"
@@ -231,7 +213,7 @@ export function Home() {
         </div>
 
         {/* Fixed Share Button */}
-        <ShareButton onClick={handleShare} loading={shareLoading} />
+        <ShareButton onClick={handleShare} />
       </div>
 
       {/* Share Bottom Sheet (for authenticated users) */}

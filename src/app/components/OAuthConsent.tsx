@@ -69,9 +69,6 @@ export function OAuthConsent() {
 
           if (data.session) {
             console.log("OAuthConsent: session set successfully, going home");
-            // Small delay to let AuthProvider's onAuthStateChange fire
-            // before navigating (prevents flash of unauthenticated UI on Home)
-            await new Promise((r) => setTimeout(r, 200));
             window.history.replaceState(null, "", "/");
             navigate("/", { replace: true });
             return;
@@ -87,7 +84,6 @@ export function OAuthConsent() {
 
         if (session) {
           console.log("OAuthConsent: existing session found, going home");
-          await new Promise((r) => setTimeout(r, 200));
           window.history.replaceState(null, "", "/");
           navigate("/", { replace: true });
           return;
