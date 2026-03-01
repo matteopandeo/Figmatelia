@@ -12,8 +12,12 @@ interface RegistrationModalProps {
 
 type ModalView = "main" | "email" | "email-sent";
 
+// ─── Rate-limit helpers ──────────────────────────────────────
+
 const COOLDOWN_KEY = "figmatelia-magic-link-cooldown";
-const COOLDOWN_DURATION = 120; // seconds between allowed sends
+const SEND_COUNT_KEY = "figmatelia-magic-link-send-count";
+const NORMAL_COOLDOWN = 90; // seconds after a successful send
+const RATE_LIMIT_COOLDOWN = 600; // 10 minutes when Supabase rejects us
 
 function getRemainingCooldown(): number {
   try {
@@ -27,16 +31,50 @@ function getRemainingCooldown(): number {
   }
 }
 
-function setPersistentCooldown() {
+function setPersistentCooldown(durationSeconds: number) {
   try {
     localStorage.setItem(
       COOLDOWN_KEY,
-      String(Date.now() + COOLDOWN_DURATION * 1000)
+      String(Date.now() + durationSeconds * 1000)
     );
   } catch {
     // localStorage unavailable
   }
 }
+
+/** Track send count so we can apply exponential back-off locally
+ *  before Supabase even rejects us. Resets after 1 hour of inactivity. */
+function getSendCount(): number {
+  try {
+    const data = JSON.parse(localStorage.getItem(SEND_COUNT_KEY) || "{}");
+    if (data.ts && Date.now() - data.ts > 3_600_000) return 0;
+    return data.count || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function incrementSendCount() {
+  try {
+    const count = getSendCount() + 1;
+    localStorage.setItem(
+      SEND_COUNT_KEY,
+      JSON.stringify({ count, ts: Date.now() })
+    );
+  } catch {
+    // ignore
+  }
+}
+
+/** Cooldown grows with each send to stay well under Supabase limits */
+function getCooldownForSend(): number {
+  const count = getSendCount();
+  if (count >= 4) return RATE_LIMIT_COOLDOWN;
+  if (count >= 2) return 180; // 3 min
+  return NORMAL_COOLDOWN;
+}
+
+// ─── Component ──────────────────────────────────────────────
 
 export function RegistrationModal({
   isOpen,
@@ -73,13 +111,13 @@ export function RegistrationModal({
 
   // Listen for auth state changes (for when magic link redirect returns)
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        if (event === "SIGNED_IN" && session?.access_token) {
-          onAuthenticated(session.access_token);
-        }
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === "SIGNED_IN" && session?.access_token) {
+        onAuthenticated(session.access_token);
       }
-    );
+    });
 
     return () => subscription.unsubscribe();
   }, [onAuthenticated]);
@@ -98,99 +136,82 @@ export function RegistrationModal({
     }, 1000);
   }, []);
 
+  /** Shared logic for sending (or resending) the magic link */
+  const doSendMagicLink = useCallback(
+    async (targetEmail: string) => {
+      // 1. Check persistent cooldown first (never call Supabase if blocked)
+      const remaining = getRemainingCooldown();
+      if (remaining > 0) {
+        setError(
+          "Please wait before requesting another link. Check your inbox (and spam folder)."
+        );
+        startCooldownTimer(remaining);
+        return false;
+      }
+
+      setLoading(true);
+      setError(null);
+
+      try {
+        const { error: authError } = await supabase.auth.signInWithOtp({
+          email: targetEmail,
+          options: {
+            emailRedirectTo: `${window.location.origin}/oauth/consent`,
+          },
+        });
+
+        if (authError) {
+          console.error("Magic link error:", authError);
+          const isRateLimit =
+            authError.message?.toLowerCase().includes("rate limit") ||
+            authError.status === 429;
+
+          if (isRateLimit) {
+            // Aggressive back-off: 10 minutes
+            setPersistentCooldown(RATE_LIMIT_COOLDOWN);
+            startCooldownTimer(RATE_LIMIT_COOLDOWN);
+            incrementSendCount();
+            setError(
+              "Too many requests. Please wait 10 minutes before trying again, and check your spam folder in the meantime."
+            );
+          } else {
+            setError(
+              "Could not send magic link. Please check your email and try again."
+            );
+          }
+          return false;
+        }
+
+        // Success — apply progressive cooldown
+        incrementSendCount();
+        const cooldown = getCooldownForSend();
+        setPersistentCooldown(cooldown);
+        startCooldownTimer(cooldown);
+        return true;
+      } catch (err) {
+        console.error("Magic link send error:", err);
+        setError("Something went wrong. Please try again.");
+        return false;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [startCooldownTimer]
+  );
+
   const handleSendMagicLink = useCallback(async () => {
     if (!email.trim()) {
       setError("Please enter your email address.");
       return;
     }
-    // Check persistent cooldown before making API call
-    const remaining = getRemainingCooldown();
-    if (remaining > 0) {
-      setError("Too many attempts — please wait before trying again.");
-      startCooldownTimer(remaining);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const { error: authError } = await supabase.auth.signInWithOtp({
-        email: email.trim(),
-        options: {
-          emailRedirectTo: `${window.location.origin}/oauth/consent`,
-        },
-      });
-      if (authError) {
-        console.error("Magic link error:", authError);
-        if (
-          authError.message?.toLowerCase().includes("rate limit") ||
-          authError.status === 429
-        ) {
-          setError(
-            "Too many attempts — please wait a few minutes before trying again."
-          );
-          setPersistentCooldown();
-          startCooldownTimer(COOLDOWN_DURATION);
-        } else {
-          setError(
-            "Could not send magic link. Please check your email and try again."
-          );
-        }
-      } else {
-        setView("email-sent");
-        setPersistentCooldown();
-        startCooldownTimer(COOLDOWN_DURATION);
-      }
-    } catch (err) {
-      console.error("Magic link send error:", err);
-      setError("Something went wrong. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  }, [email, startCooldownTimer]);
+    const ok = await doSendMagicLink(email.trim());
+    if (ok) setView("email-sent");
+  }, [email, doSendMagicLink]);
 
   const handleResend = useCallback(async () => {
     if (resendCooldown > 0 || loading) return;
-    // Check persistent cooldown before making API call
-    const remaining = getRemainingCooldown();
-    if (remaining > 0) {
-      setError("Too many attempts — please wait before trying again.");
-      startCooldownTimer(remaining);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const { error: authError } = await supabase.auth.signInWithOtp({
-        email: email.trim(),
-        options: {
-          emailRedirectTo: `${window.location.origin}/oauth/consent`,
-        },
-      });
-      if (authError) {
-        console.error("Resend magic link error:", authError);
-        if (
-          authError.message?.toLowerCase().includes("rate limit") ||
-          authError.status === 429
-        ) {
-          setError(
-            "Too many attempts — please wait a few minutes before trying again."
-          );
-          setPersistentCooldown();
-          startCooldownTimer(COOLDOWN_DURATION);
-        } else {
-          setError("Could not resend. Please try again.");
-        }
-      } else {
-        setPersistentCooldown();
-        startCooldownTimer(COOLDOWN_DURATION);
-      }
-    } catch (err) {
-      console.error("Resend magic link error:", err);
-      setError("Something went wrong. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  }, [email, resendCooldown, loading, startCooldownTimer]);
+    await doSendMagicLink(email.trim());
+  }, [email, resendCooldown, loading, doSendMagicLink]);
 
   const handleBackdropClick = useCallback(() => {
     if (!loading) onClose();
@@ -199,6 +220,15 @@ export function RegistrationModal({
   // Drag-to-dismiss state
   const [dragY, setDragY] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
+
+  /** Format seconds into a human-readable string */
+  const formatWait = (s: number) => {
+    if (s >= 120) {
+      const m = Math.ceil(s / 60);
+      return `Wait ${m} min`;
+    }
+    return `Wait ${s}s`;
+  };
 
   return (
     <AnimatePresence>
@@ -221,7 +251,11 @@ export function RegistrationModal({
             initial={{ y: "100%" }}
             animate={{ y: isDragging ? dragY : 0 }}
             exit={{ y: "100%" }}
-            transition={isDragging ? { duration: 0 } : { type: "spring", damping: 28, stiffness: 350 }}
+            transition={
+              isDragging
+                ? { duration: 0 }
+                : { type: "spring", damping: 28, stiffness: 350 }
+            }
             drag="y"
             dragConstraints={{ top: 0 }}
             dragElastic={0.2}
@@ -279,10 +313,29 @@ export function RegistrationModal({
                             className="flex items-center justify-center"
                             style={{ width: "64px", height: "64px" }}
                           >
-                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none">
-                              <rect x="3" y="3" width="18" height="18" rx="2" stroke="#757575" strokeWidth="1.5" />
+                            <svg
+                              width="48"
+                              height="48"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                            >
+                              <rect
+                                x="3"
+                                y="3"
+                                width="18"
+                                height="18"
+                                rx="2"
+                                stroke="#757575"
+                                strokeWidth="1.5"
+                              />
                               <circle cx="8.5" cy="8.5" r="1.5" fill="#757575" />
-                              <path d="M21 15L16 10L5 21" stroke="#757575" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                              <path
+                                d="M21 15L16 10L5 21"
+                                stroke="#757575"
+                                strokeWidth="1.5"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
                             </svg>
                           </div>
                         )}
@@ -314,7 +367,8 @@ export function RegistrationModal({
                           maxWidth: "280px",
                         }}
                       >
-                        Create an account to keep your collection safe and share it with anyone.
+                        Create an account to keep your collection safe and share
+                        it with anyone.
                       </p>
 
                       {/* Error message */}
@@ -355,7 +409,16 @@ export function RegistrationModal({
                           }}
                         />
                         {/* Mail icon */}
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#757575" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <svg
+                          width="18"
+                          height="18"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="#757575"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
                           <rect x="2" y="4" width="20" height="16" rx="2" />
                           <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
                         </svg>
@@ -373,7 +436,8 @@ export function RegistrationModal({
                           className="absolute pointer-events-none rounded-[inherit]"
                           style={{
                             inset: "-1px",
-                            boxShadow: "inset 0px 0px 9.78px 0px rgba(255,255,255,0.1)",
+                            boxShadow:
+                              "inset 0px 0px 9.78px 0px rgba(255,255,255,0.1)",
                           }}
                         />
                       </button>
@@ -415,9 +479,26 @@ export function RegistrationModal({
                           setView("main");
                         }}
                       >
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                          <path d="M19 12H5" stroke="#757575" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                          <path d="M12 19L5 12L12 5" stroke="#757575" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                        <svg
+                          width="20"
+                          height="20"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                        >
+                          <path
+                            d="M19 12H5"
+                            stroke="#757575"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                          <path
+                            d="M12 19L5 12L12 5"
+                            stroke="#757575"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
                         </svg>
                       </button>
 
@@ -445,7 +526,8 @@ export function RegistrationModal({
                           maxWidth: "280px",
                         }}
                       >
-                        We'll send you a magic link to sign in — no password needed.
+                        We'll send you a magic link to sign in — no password
+                        needed.
                       </p>
 
                       {/* Error */}
@@ -494,9 +576,10 @@ export function RegistrationModal({
                       <button
                         className="w-full flex items-center justify-center py-[14px] rounded-[12px] cursor-pointer border-none relative"
                         style={{
-                          background: loading || resendCooldown > 0
-                            ? "rgba(200, 200, 196, 0.75)"
-                            : "rgba(232, 232, 232, 0.75)",
+                          background:
+                            loading || resendCooldown > 0
+                              ? "rgba(200, 200, 196, 0.75)"
+                              : "rgba(232, 232, 232, 0.75)",
                           backdropFilter: "blur(12px)",
                           WebkitBackdropFilter: "blur(12px)",
                           opacity: resendCooldown > 0 ? 0.6 : 1,
@@ -525,7 +608,7 @@ export function RegistrationModal({
                           {loading
                             ? "Sending..."
                             : resendCooldown > 0
-                              ? `Wait ${resendCooldown}s`
+                              ? formatWait(resendCooldown)
                               : "Send magic link"}
                         </span>
                       </button>
@@ -550,7 +633,16 @@ export function RegistrationModal({
                           backgroundColor: "rgba(52, 168, 83, 0.1)",
                         }}
                       >
-                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#34A853" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <svg
+                          width="28"
+                          height="28"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="#34A853"
+                          strokeWidth="2.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
                           <path d="M20 6L9 17L4 12" />
                         </svg>
                       </div>
@@ -569,7 +661,7 @@ export function RegistrationModal({
                       </h2>
 
                       <p
-                        className="text-center mb-[20px]"
+                        className="text-center mb-[6px]"
                         style={{
                           fontFamily: "'Inter', sans-serif",
                           fontSize: "14px",
@@ -579,8 +671,24 @@ export function RegistrationModal({
                         }}
                       >
                         We sent a magic link to{" "}
-                        <span style={{ color: "#1B1D1C", fontWeight: 500 }}>{email}</span>.
-                        Click the link to sign in and save your stamp.
+                        <span style={{ color: "#1B1D1C", fontWeight: 500 }}>
+                          {email}
+                        </span>
+                        . Click the link to sign in and save your stamp.
+                      </p>
+
+                      {/* Spam hint */}
+                      <p
+                        className="text-center mb-[20px]"
+                        style={{
+                          fontFamily: "'Inter', sans-serif",
+                          fontSize: "12px",
+                          lineHeight: "1.4",
+                          color: "#A0A09C",
+                          maxWidth: "260px",
+                        }}
+                      >
+                        Don't see it? Check your spam or junk folder.
                       </p>
 
                       {/* Error */}
@@ -601,9 +709,10 @@ export function RegistrationModal({
                       <button
                         className="w-full flex items-center justify-center py-[14px] rounded-[12px] cursor-pointer border-none relative mb-[10px]"
                         style={{
-                          background: resendCooldown > 0
-                            ? "rgba(200, 200, 196, 0.5)"
-                            : "rgba(232, 232, 232, 0.75)",
+                          background:
+                            resendCooldown > 0
+                              ? "rgba(200, 200, 196, 0.5)"
+                              : "rgba(232, 232, 232, 0.75)",
                           backdropFilter: "blur(12px)",
                           WebkitBackdropFilter: "blur(12px)",
                           opacity: resendCooldown > 0 ? 0.6 : 1,
@@ -632,7 +741,7 @@ export function RegistrationModal({
                           {loading
                             ? "Sending..."
                             : resendCooldown > 0
-                              ? `Resend in ${resendCooldown}s`
+                              ? `Resend in ${formatWait(resendCooldown)}`
                               : "Resend magic link"}
                         </span>
                       </button>

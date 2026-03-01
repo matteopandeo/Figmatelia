@@ -2,9 +2,10 @@ import svgPaths from "../../imports/svg-53u02dzvr3";
 
 interface ShareButtonProps {
   onClick?: () => void;
+  loading?: boolean;
 }
 
-export function ShareButton({ onClick }: ShareButtonProps) {
+export function ShareButton({ onClick, loading = false }: ShareButtonProps) {
   return (
     <div className="fixed bottom-0 left-0 right-0 flex items-center justify-center pb-[28px] pt-[10px] pointer-events-none"
       style={{ maxWidth: "403px", margin: "0 auto" }}
@@ -15,8 +16,11 @@ export function ShareButton({ onClick }: ShareButtonProps) {
           background: "rgba(232, 232, 232, 0.75)",
           backdropFilter: "blur(12px)",
           WebkitBackdropFilter: "blur(12px)",
+          opacity: loading ? 0.6 : 1,
+          transition: "opacity 0.2s ease",
         }}
-        onClick={onClick}
+        onClick={loading ? undefined : onClick}
+        disabled={loading}
       >
         {/* Outer border + shadow */}
         <div

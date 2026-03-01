@@ -161,7 +161,7 @@ export function StampCard({ isEmpty = true, imageUrl, onClick, id, localOnly = f
       </svg>
       {isEmpty && (
         <div className="absolute inset-0 flex items-center justify-center">
-          <svg className="mt-[-69px] mb-[0px] mx-[0px] mt-[-69px] mb-[0px] mx-[0px] mt-[-69px] mb-[0px] mx-[0px] mt-[-69px] mb-[0px] mx-[0px] mt-[-69px] mb-[0px] mx-[0px] mt-[-69px] mb-[0px] mx-[0px] mt-[-69px] mb-[0px] mx-[0px] mt-[-69px] mb-[0px] mx-[0px] mt-[-70px] mb-[0px] mx-[0px] mt-[-70px] mb-[0px] mx-[0px] mt-[-70px] mb-[0px] mx-[0px] mt-[-70px] mb-[0px] mx-[0px] mt-[-70px] mb-[0px] mx-[0px] mt-[-70px] mb-[0px] mx-[0px] mt-[-71px] mb-[0px] mx-[0px] mt-[-71px] mb-[0px] mx-[0px] mt-[-71px] mb-[0px] mx-[0px] mt-[-71px] mb-[0px] mx-[0px] mt-[-71px] mb-[0px] mx-[0px] mt-[-71px] mb-[0px] mx-[0px] mt-[-72px] mb-[0px] mx-[0px] mt-[-72px] mb-[0px] mx-[0px] mt-[-72px] mb-[0px] mx-[0px] mt-[-72px] mb-[0px] mx-[0px] mt-[-72px] mb-[0px] mx-[0px] mt-[-71px] mb-[0px] mx-[0px] mt-[-71px] mb-[0px] mx-[0px] mt-[-71px] mb-[0px] mx-[0px] mt-[-71px] mb-[0px] mx-[0px] mt-[-71px] mb-[0px] mx-[0px] mt-[-71px] mb-[0px] mx-[0px] mt-[-70px] mb-[0px] mx-[0px] mt-[-70px] mb-[0px] mx-[0px] mt-[-70px] mb-[0px]"
+          <svg className="mt-[-70px]"
             width="32"
             height="32"
             viewBox="0 0 32 32"

@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import { toast } from "sonner";
 import { StampDisplay } from "./StampDisplay";
 
 interface Stamp {
@@ -242,6 +243,48 @@ export function StampGallery({
           >
             {stamp.name || "Untitled"}
           </motion.p>
+
+          {/* Download single stamp */}
+          <button
+            className="mt-[12px] flex items-center gap-[6px] bg-transparent border-none cursor-pointer px-[12px] py-[8px] rounded-[8px]"
+            style={{ backgroundColor: "rgba(255,255,255,0.1)" }}
+            onClick={() => {
+              try {
+                const link = document.createElement("a");
+                link.download = `${(stamp.name || "stamp").replace(/[^a-zA-Z0-9]/g, "-")}.png`;
+                link.href = stamp.imageUrl;
+                link.click();
+                toast.success("Stamp downloaded!");
+              } catch {
+                toast.error("Could not download stamp");
+              }
+            }}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="rgba(255,255,255,0.6)"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            <span
+              style={{
+                fontFamily: "'Inter', sans-serif",
+                fontSize: "13px",
+                fontWeight: 400,
+                color: "rgba(255,255,255,0.6)",
+              }}
+            >
+              Download
+            </span>
+          </button>
 
           {/* Dot indicators */}
           {stamps.length > 1 && stamps.length <= 12 && (
